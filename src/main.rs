@@ -14,11 +14,15 @@ enum SceneNode {
 }
 
 impl SceneNode {
-    fn draw(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    fn draw<F>(&self, ctx: &egui::Context, ui: &mut egui::Ui, draw_children: F)
+    where
+        F: FnOnce(&egui::Context, &mut egui::Ui) -> (),
+    {
         match self {
             SceneNode::EmptyNode {} => {}
             SceneNode::TextNode { text } => {
                 ui.label(text.clone());
+                draw_children(ctx, ui);
             }
         }
     }
@@ -54,15 +58,25 @@ struct SceneObject {
     children: Vec<SceneObjectPtr>,
 }
 
-type SceneObjectPtr = Arc<Mutex<SceneObject>>;
+#[derive(Clone)]
+struct SceneObjectPtr(Arc<Mutex<SceneObject>>);
+
+impl SceneObjectPtr {
+    fn set_state<F, R>(&self, cb: F) -> R
+    where
+        F: FnOnce(&mut SceneObject) -> R,
+    {
+        cb(&mut self.0.lock().unwrap())
+    }
+}
 
 impl SceneObject {
     fn new(id: u32) -> SceneObjectPtr {
-        Arc::new(Mutex::new(Self {
+        SceneObjectPtr(Arc::new(Mutex::new(Self {
             id,
             node: None,
             children: vec![],
-        }))
+        })))
     }
 
     fn set_node(&mut self, node: Option<SceneNode>) {
@@ -74,15 +88,15 @@ impl SceneObject {
     }
 
     fn draw(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        if let Some(node) = &mut self.node {
-            node.draw(ctx, ui);
-
-            for child in self.children.iter_mut() {
-                child.lock().unwrap().draw(ctx, ui);
-            }
+        if let Some(node) = &self.node {
+            node.draw(ctx, ui, |ctx, ui| {
+                for child in self.children.iter() {
+                    child.set_state(|s| s.draw(ctx, ui));
+                }
+            });
         } else {
-            for child in self.children.iter_mut() {
-                child.lock().unwrap().draw(ctx, ui);
+            for child in self.children.iter() {
+                child.set_state(|s| s.draw(ctx, ui));
             }
         }
     }
@@ -105,7 +119,7 @@ impl UIScene {
     }
 
     fn add(&mut self, node: SceneObjectPtr) {
-        let id = node.lock().unwrap().id;
+        let id = node.set_state(|s| s.id);
         self.node_map.entry(id).and_modify(|e| *e = node);
     }
 
@@ -114,7 +128,7 @@ impl UIScene {
     }
 
     fn draw(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        self.root.lock().unwrap().draw(ctx, ui);
+        self.root.set_state(|s| s.draw(ctx, ui));
     }
 
     fn process(&mut self, tx: Transaction) {
@@ -130,10 +144,10 @@ impl UIScene {
                     let parent = self.get_object_mut(parent_id);
                     if let Some(parent) = parent {
                         let new_obj = SceneObject::new(object_id);
-                        new_obj.lock().unwrap().set_node(Some(node));
+                        new_obj.set_state(|s| s.set_node(Some(node)));
                         let new_obj_clone = new_obj.clone();
                         self.add(new_obj);
-                        parent.lock().unwrap().append(new_obj_clone);
+                        parent.set_state(|s| s.append(new_obj_clone));
                     } else {
                         println!("parent {} not found.", parent_id);
                     }
@@ -141,7 +155,7 @@ impl UIScene {
                 EditCommand::ReplaceNode { object_id, node } => {
                     let obj = self.get_object_mut(object_id);
                     if let Some(obj) = obj {
-                        obj.lock().unwrap().set_node(Some(node));
+                        obj.set_state(|s| s.set_node(Some(node)))
                     } else {
                         println!("object {} not found.", object_id);
                     }
@@ -202,7 +216,7 @@ impl Application {
 
 impl eframe::App for Application {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        println!("render");
+        // println!("render");
         // Render the current scene.
         egui::CentralPanel::default().show(ctx, |ui| {
             self.scene.lock().unwrap().draw(ctx, ui);
