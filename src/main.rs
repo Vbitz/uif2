@@ -1,138 +1,128 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
     thread,
 };
 
 use eframe::egui;
+use egui::Context;
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
-enum SceneNode {
-    EmptyNode {},
+#[derive(Serialize, Deserialize)]
+enum Node {
     TextNode { text: String },
 }
 
-impl SceneNode {
-    fn draw<F>(&self, ctx: &egui::Context, ui: &mut egui::Ui, draw_children: F)
-    where
-        F: FnOnce(&egui::Context, &mut egui::Ui) -> (),
-    {
-        match self {
-            SceneNode::EmptyNode {} => {}
-            SceneNode::TextNode { text } => {
-                ui.label(text.clone());
-                draw_children(ctx, ui);
-            }
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 enum EditCommand {
     AppendChild {
         parent_id: u32,
         object_id: u32,
-        node: SceneNode,
-    },
-    ReplaceNode {
-        object_id: u32,
-        node: SceneNode,
-    },
-    CleanupClient {},
-    DeleteObject {
-        object_id: u32,
+        node: Node,
     },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 struct Transaction {
     client_id: String,
 
     edits: Vec<EditCommand>,
 }
 
-struct SceneObject {
+struct SceneNodeImpl {
     id: u32,
-    node: Option<SceneNode>,
-    children: Vec<SceneObjectPtr>,
+    node: Option<Node>,
+    children: Vec<SceneNode>,
 }
 
 #[derive(Clone)]
-struct SceneObjectPtr(Arc<Mutex<SceneObject>>);
-
-impl SceneObjectPtr {
-    fn set_state<F, R>(&self, cb: F) -> R
-    where
-        F: FnOnce(&mut SceneObject) -> R,
-    {
-        cb(&mut self.0.lock().unwrap())
-    }
-}
-
-impl SceneObject {
-    fn new(id: u32) -> SceneObjectPtr {
-        SceneObjectPtr(Arc::new(Mutex::new(Self {
+struct SceneNode(Arc<RwLock<SceneNodeImpl>>);
+impl SceneNode {
+    fn new(id: u32) -> SceneNode {
+        SceneNode(Arc::new(RwLock::new(SceneNodeImpl {
             id,
             node: None,
             children: vec![],
         })))
     }
 
-    fn set_node(&mut self, node: Option<SceneNode>) {
-        self.node = node;
-    }
+    fn draw(&self, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
+        let val = self.0.read().unwrap();
 
-    fn append(&mut self, child: SceneObjectPtr) {
-        self.children.push(child);
-    }
-
-    fn draw(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        if let Some(node) = &self.node {
-            node.draw(ctx, ui, |ctx, ui| {
-                for child in self.children.iter() {
-                    child.set_state(|s| s.draw(ctx, ui));
-                }
-            });
-        } else {
-            for child in self.children.iter() {
-                child.set_state(|s| s.draw(ctx, ui));
+        match &val.node {
+            Some(Node::TextNode { text }) => {
+                ui.label(text.clone());
             }
+            None => {}
+        }
+
+        for child in &val.children {
+            child.draw(ctx, ui);
+        }
+    }
+
+    fn set_node(&self, node: Node) {
+        self.0.write().unwrap().node = Some(node)
+    }
+
+    fn append(&self, new_child: SceneNode) {
+        self.0.write().unwrap().children.push(new_child);
+    }
+
+    fn id(&self) -> u32 {
+        self.0.read().unwrap().id
+    }
+
+    fn get_child(&self, id: u32) -> Option<SceneNode> {
+        if self.id() == id {
+            Some(self.clone())
+        } else {
+            for child in &self.0.read().unwrap().children {
+                match child.get_child(id) {
+                    Some(child) => return Some(child),
+                    None => continue,
+                }
+            }
+            None
         }
     }
 }
 
 const ROOT_ID: u32 = 0xff_ff_ff_ff;
 
-struct UIScene {
-    root: SceneObjectPtr,
-    node_map: HashMap<u32, SceneObjectPtr>,
+struct Scene {
+    root: SceneNode,
 }
 
-impl UIScene {
-    fn new() -> Self {
-        let root = SceneObject::new(ROOT_ID);
-        let mut node_map = HashMap::new();
-        let node_entry = root.clone();
-        node_map.insert(ROOT_ID, node_entry);
-        Self { root, node_map }
+impl Scene {
+    fn new() -> Scene {
+        Self {
+            root: SceneNode::new(ROOT_ID),
+        }
     }
 
-    fn add(&mut self, node: SceneObjectPtr) {
-        let id = node.set_state(|s| s.id);
-        self.node_map.entry(id).and_modify(|e| *e = node);
+    fn draw(&self, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
+        self.root.draw(ctx, ui);
     }
 
-    fn get_object_mut(&mut self, id: u32) -> Option<SceneObjectPtr> {
-        self.node_map.get(&id).cloned()
+    fn get_child(&self, id: u32) -> Option<SceneNode> {
+        self.root.get_child(id)
+    }
+}
+
+struct SocketListener {
+    scene: Arc<Scene>,
+    ctx: Context,
+}
+
+impl SocketListener {
+    fn new(scene: Arc<Scene>, ctx: Context) -> Self {
+        Self { scene, ctx }
     }
 
-    fn draw(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        self.root.set_state(|s| s.draw(ctx, ui));
-    }
-
-    fn process(&mut self, tx: Transaction) {
-        println!("process: {:?}", tx);
+    pub(crate) fn handle_transaction(&self, tx: Transaction) {
+        self.ctx.request_repaint();
 
         for edit in tx.edits {
             match edit {
@@ -141,43 +131,15 @@ impl UIScene {
                     object_id,
                     node,
                 } => {
-                    let parent = self.get_object_mut(parent_id);
+                    let parent = self.scene.get_child(parent_id);
                     if let Some(parent) = parent {
-                        let new_obj = SceneObject::new(object_id);
-                        new_obj.set_state(|s| s.set_node(Some(node)));
-                        let new_obj_clone = new_obj.clone();
-                        self.add(new_obj);
-                        parent.set_state(|s| s.append(new_obj_clone));
-                    } else {
-                        println!("parent {} not found.", parent_id);
+                        let new_child = SceneNode::new(object_id);
+                        new_child.set_node(node);
+                        parent.append(new_child);
                     }
                 }
-                EditCommand::ReplaceNode { object_id, node } => {
-                    let obj = self.get_object_mut(object_id);
-                    if let Some(obj) = obj {
-                        obj.set_state(|s| s.set_node(Some(node)))
-                    } else {
-                        println!("object {} not found.", object_id);
-                    }
-                }
-                EditCommand::CleanupClient {} => todo!(),
-                EditCommand::DeleteObject { object_id } => todo!(),
             }
         }
-    }
-}
-
-struct SocketListener {
-    scene: Arc<Mutex<UIScene>>,
-}
-
-impl SocketListener {
-    fn new(socket: Arc<Mutex<UIScene>>) -> Self {
-        Self { scene: socket }
-    }
-
-    fn handle_transaction(&self, tx: Transaction) {
-        self.scene.lock().unwrap().process(tx);
     }
 
     fn listen(&self) {
@@ -205,33 +167,40 @@ impl SocketListener {
 }
 
 struct Application {
-    scene: Arc<Mutex<UIScene>>,
+    scene: Arc<Scene>,
+    listening: bool,
 }
-
 impl Application {
-    fn new(socket: Arc<Mutex<UIScene>>) -> Self {
-        Self { scene: socket }
+    fn new(scene: Arc<Scene>) -> Application {
+        Application {
+            scene: scene,
+            listening: false,
+        }
     }
 }
 
 impl eframe::App for Application {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // println!("render");
-        // Render the current scene.
+        if !self.listening {
+            let scene_clone = self.scene.clone();
+            let ctx_clone = ctx.clone();
+
+            thread::spawn(move || {
+                SocketListener::new(scene_clone, ctx_clone).listen();
+            });
+
+            self.listening = true;
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.scene.lock().unwrap().draw(ctx, ui);
+            self.scene.draw(ctx, ui);
         });
     }
 }
 
 fn main() {
-    let scene = Arc::new(Mutex::new(UIScene::new()));
-    let scene_socket = Arc::clone(&scene);
-
-    thread::spawn(move || {
-        let listener = SocketListener::new(scene_socket);
-        listener.listen();
-    });
+    let scene = Arc::new(Scene::new());
+    let app_scene = scene.clone();
 
     let options = eframe::NativeOptions {
         initial_window_size: Some(egui::vec2(320.0, 240.0)),
@@ -240,6 +209,6 @@ fn main() {
     eframe::run_native(
         "My egui App",
         options,
-        Box::new(|_cc| Box::new(Application::new(scene))),
+        Box::new(|_cc| Box::new(Application::new(app_scene))),
     )
 }
