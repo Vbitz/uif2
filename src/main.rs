@@ -14,6 +14,9 @@ use ws::Sender;
 enum Node {
     Label { text: String },
     TextInput { text: String, on_changed: String },
+    Button { text: String, on_clicked: String },
+    LeftToRightLayout {},
+    Window { title: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,6 +42,7 @@ struct Transaction {
 #[derive(Serialize, Deserialize)]
 enum Event {
     TextChanged { id: String, text: String },
+    Clicked { id: String },
 }
 
 struct ClientImpl {
@@ -100,6 +104,31 @@ impl SceneNode {
                         text: text.to_string(),
                     });
                 }
+            }
+            Some(Node::Button { text, on_clicked }) => {
+                let resp = ui.button(text.clone());
+                if resp.clicked() {
+                    client.send_event(Event::Clicked {
+                        id: on_clicked.to_string(),
+                    });
+                }
+            }
+            Some(Node::LeftToRightLayout {}) => {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    for child in &val.children {
+                        child.draw(client, ctx, ui);
+                    }
+                });
+                return;
+            }
+            Some(Node::Window { title }) => {
+                let window = egui::Window::new(title.clone()).id(egui::Id::new(val.id));
+                window.show(ctx, |ui| {
+                    for child in &val.children {
+                        child.draw(client, ctx, ui);
+                    }
+                });
+                return;
             }
             None => {}
         }

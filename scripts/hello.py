@@ -3,6 +3,23 @@
 import json
 from websockets import connect
 import asyncio
+import os
+
+
+def random_id():
+    return os.urandom(4).hex()
+
+
+def window(title):
+    return {
+        "Window": {"title": title}
+    }
+
+
+def left_to_right_layout():
+    return {
+        "LeftToRightLayout": {}
+    }
 
 
 def label(s):
@@ -12,9 +29,16 @@ def label(s):
 
 
 def text_input():
-    ev_id = "testing"
+    ev_id = random_id()
     return ev_id, {
         "TextInput": {"text": "", "on_changed": ev_id}
+    }
+
+
+def button(text):
+    ev_id = random_id()
+    return ev_id, {
+        "Button": {"text": text, "on_clicked": ev_id}
     }
 
 
@@ -52,11 +76,15 @@ async def main():
         ROOT = 0xff_ff_ff_ff
 
         ev_id, textbox = text_input()
+        btn_id, btn = button("Testing")
 
         await send(transaction(
             "hello",
-            append_child(ROOT, 10, label("Hello, World")),
-            append_child(ROOT, 11, textbox),
+            append_child(ROOT, 10, window("Hello")),
+            append_child(10, 11, left_to_right_layout()),
+            append_child(11, 12, label("Hello, World")),
+            append_child(11, 13, textbox),
+            append_child(10, 14, btn),
         ))
 
         while True:
@@ -68,7 +96,15 @@ async def main():
                 if ev["id"] == ev_id:
                     await send(transaction(
                         "hello",
-                        replace_node(10, label(ev["text"])),
+                        replace_node(12, label(ev["text"])),
+                    ))
+            elif "Clicked" in ev:
+                ev = ev["Clicked"]
+                if ev["id"] == btn_id:
+                    await send(transaction(
+                        "hello",
+                        replace_node(
+                            12, label("The button has been clicked.")),
                     ))
 
             print(ev)
