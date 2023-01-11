@@ -1,23 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use std::{
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     thread,
 };
 
 use eframe::egui;
 use egui::Context;
 use serde_derive::{Deserialize, Serialize};
+use ws::Sender;
 
 #[derive(Serialize, Deserialize)]
 enum Node {
-    TextNode { text: String },
+    Label { text: String },
+    TextInput { text: String, on_changed: String },
 }
 
 #[derive(Serialize, Deserialize)]
 enum EditCommand {
     AppendChild {
         parent_id: u32,
+        object_id: u32,
+        node: Node,
+    },
+    ReplaceNode {
         object_id: u32,
         node: Node,
     },
@@ -28,6 +34,37 @@ struct Transaction {
     client_id: String,
 
     edits: Vec<EditCommand>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum Event {
+    TextChanged { id: String, text: String },
+}
+
+struct ClientImpl {
+    senders: Vec<Sender>,
+}
+
+#[derive(Clone)]
+struct Client(Arc<Mutex<ClientImpl>>);
+impl Client {
+    fn send_event(&self, event: Event) {
+        let val = self.0.lock().unwrap();
+
+        let msg = serde_json::to_string(&event).unwrap();
+
+        for sender in &val.senders {
+            sender.broadcast(msg.clone()).unwrap();
+        }
+    }
+
+    fn add_sender(&self, sender: Sender) {
+        self.0.lock().unwrap().senders.push(sender);
+    }
+
+    fn new() -> Client {
+        Client(Arc::new(Mutex::new(ClientImpl { senders: vec![] })))
+    }
 }
 
 struct SceneNodeImpl {
@@ -47,18 +84,28 @@ impl SceneNode {
         })))
     }
 
-    fn draw(&self, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
-        let val = self.0.read().unwrap();
+    fn draw(&self, client: &Client, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
+        let mut val = self.0.write().unwrap();
 
-        match &val.node {
-            Some(Node::TextNode { text }) => {
+        match &mut val.node {
+            Some(Node::Label { text }) => {
                 ui.label(text.clone());
+            }
+            Some(Node::TextInput { text, on_changed }) => {
+                let resp = ui.text_edit_singleline(text);
+
+                if resp.changed() {
+                    client.send_event(Event::TextChanged {
+                        id: on_changed.to_string(),
+                        text: text.to_string(),
+                    });
+                }
             }
             None => {}
         }
 
         for child in &val.children {
-            child.draw(ctx, ui);
+            child.draw(client, ctx, ui);
         }
     }
 
@@ -102,8 +149,8 @@ impl Scene {
         }
     }
 
-    fn draw(&self, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
-        self.root.draw(ctx, ui);
+    fn draw(&self, client: &Client, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
+        self.root.draw(client, ctx, ui);
     }
 
     fn get_child(&self, id: u32) -> Option<SceneNode> {
@@ -114,11 +161,12 @@ impl Scene {
 struct SocketListener {
     scene: Arc<Scene>,
     ctx: Context,
+    client: Client,
 }
 
 impl SocketListener {
-    fn new(scene: Arc<Scene>, ctx: Context) -> Self {
-        Self { scene, ctx }
+    fn new(scene: Arc<Scene>, ctx: Context, client: Client) -> Self {
+        Self { scene, ctx, client }
     }
 
     pub(crate) fn handle_transaction(&self, tx: Transaction) {
@@ -131,11 +179,22 @@ impl SocketListener {
                     object_id,
                     node,
                 } => {
-                    let parent = self.scene.get_child(parent_id);
-                    if let Some(parent) = parent {
-                        let new_child = SceneNode::new(object_id);
-                        new_child.set_node(node);
-                        parent.append(new_child);
+                    if let Some(_) = self.scene.get_child(object_id) {
+                        println!("Duplicate object ID: {}", object_id);
+                    } else {
+                        let parent = self.scene.get_child(parent_id);
+                        if let Some(parent) = parent {
+                            let new_child = SceneNode::new(object_id);
+                            new_child.set_node(node);
+                            parent.append(new_child);
+                        }
+                    }
+                }
+                EditCommand::ReplaceNode { object_id, node } => {
+                    if let Some(sn) = self.scene.get_child(object_id) {
+                        sn.set_node(node);
+                    } else {
+                        println!("Object {} does not exist.", object_id);
                     }
                 }
             }
@@ -145,6 +204,8 @@ impl SocketListener {
     fn listen(&self) {
         println!("listening on ws://127.0.0.1:3012/");
         ws::listen("127.0.0.1:3012", |out| {
+            self.client.add_sender(out);
+
             move |msg: ws::Message| {
                 if let Ok(text) = msg.into_text() {
                     match serde_json::from_str::<Transaction>(&text) {
@@ -169,12 +230,15 @@ impl SocketListener {
 struct Application {
     scene: Arc<Scene>,
     listening: bool,
+    client: Client,
 }
+
 impl Application {
     fn new(scene: Arc<Scene>) -> Application {
         Application {
             scene: scene,
             listening: false,
+            client: Client::new(),
         }
     }
 }
@@ -184,16 +248,17 @@ impl eframe::App for Application {
         if !self.listening {
             let scene_clone = self.scene.clone();
             let ctx_clone = ctx.clone();
+            let client_clone = self.client.clone();
 
             thread::spawn(move || {
-                SocketListener::new(scene_clone, ctx_clone).listen();
+                SocketListener::new(scene_clone, ctx_clone, client_clone).listen();
             });
 
             self.listening = true;
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.scene.draw(ctx, ui);
+            self.scene.draw(&self.client, ctx, ui);
         });
     }
 }
@@ -207,7 +272,7 @@ fn main() {
         ..Default::default()
     };
     eframe::run_native(
-        "My egui App",
+        "UIF2",
         options,
         Box::new(|_cc| Box::new(Application::new(app_scene))),
     )
