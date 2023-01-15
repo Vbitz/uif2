@@ -22,9 +22,9 @@ def left_to_right_layout():
     }
 
 
-def label(s):
+def label(s, heading=False):
     return {
-        "Label": {"text": s}
+        "Label": {"text": s, "heading": heading}
     }
 
 

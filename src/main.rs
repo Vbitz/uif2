@@ -12,7 +12,7 @@ use ws::Sender;
 
 #[derive(Serialize, Deserialize)]
 enum Node {
-    Label { text: String },
+    Label { text: String, heading: Option<bool> },
     TextInput { text: String, on_changed: String },
     Button { text: String, on_clicked: String },
     LeftToRightLayout {},
@@ -92,8 +92,12 @@ impl SceneNode {
         let mut val = self.0.write().unwrap();
 
         match &mut val.node {
-            Some(Node::Label { text }) => {
-                ui.label(text.clone());
+            Some(Node::Label { text, heading }) => {
+                if let Some(true) = heading {
+                    ui.heading(text.clone());
+                } else {
+                    ui.label(text.clone());
+                }
             }
             Some(Node::TextInput { text, on_changed }) => {
                 let resp = ui.text_edit_singleline(text);
