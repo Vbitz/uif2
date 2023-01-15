@@ -12,11 +12,28 @@ use ws::Sender;
 
 #[derive(Serialize, Deserialize)]
 enum Node {
-    Label { text: String, heading: Option<bool> },
-    TextInput { text: String, on_changed: String },
-    Button { text: String, on_clicked: String },
+    Label {
+        text: String,
+        heading: Option<bool>,
+    },
+    TextInput {
+        text: String,
+        on_changed: String,
+    },
+    Button {
+        text: String,
+        on_clicked: String,
+    },
     LeftToRightLayout {},
-    Window { title: String },
+    Window {
+        title: String,
+    },
+    ComboBox {
+        label: String,
+        selected: String,
+        options: Vec<String>,
+        on_changed: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
