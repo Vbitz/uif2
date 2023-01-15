@@ -134,6 +134,28 @@ impl SceneNode {
                 });
                 return;
             }
+            Some(Node::ComboBox {
+                label,
+                selected,
+                options,
+                on_changed,
+            }) => {
+                let resp = egui::ComboBox::from_label(label.clone())
+                    .selected_text(format!("{:?}", selected))
+                    .show_ui(ui, |ui| {
+                        for option in options {
+                            ui.selectable_value(selected, option.clone(), option.clone());
+                        }
+                    })
+                    .response;
+
+                if resp.changed() {
+                    client.send_event(Event::TextChanged {
+                        id: on_changed.to_string(),
+                        text: selected.to_string(),
+                    });
+                }
+            }
             None => {}
         }
 
@@ -241,6 +263,7 @@ impl SocketListener {
 
             move |msg: ws::Message| {
                 if let Ok(text) = msg.into_text() {
+                    // println!("got text: {}", text);
                     match serde_json::from_str::<Transaction>(&text) {
                         Ok(tx) => {
                             self.handle_transaction(tx);
