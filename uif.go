@@ -1,6 +1,8 @@
 package uif2
 
-import "github.com/gorilla/websocket"
+import (
+	"github.com/gorilla/websocket"
+)
 
 const ROOT = 0xff_ff_ff_ff
 
@@ -35,19 +37,28 @@ func Dial() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{
+	client := &Client{
 		conn: conn,
 		currentTx: &Transaction{
 			ClientId: "gouif2",
 			Edits:    []EditCommand{},
 		},
-	}, nil
+	}
+
+	client.Root = &Node{
+		state: nodeState{
+			client: client,
+			id:     ROOT,
+		},
+	}
+
+	return client, nil
 }
 
 type nodeState struct {
 	client   *Client
 	id       uint32
-	children []Node
+	children []NodeFuncs
 }
 
 type Label struct {
@@ -56,15 +67,22 @@ type Label struct {
 	Text string `json:"text"`
 }
 
+// implements NodeFuncs
+func (n *Label) Append(node NodeFuncs)    { n.node.Append(node) }
+func (n *Label) SetClient(client *Client) { n.node.SetClient(client) }
+func (n *Label) Node() *Node              { return n.node }
+
 func (n *Label) SetText(t string) {
 	n.Text = t
 }
 
 func NewLabel(text string) *Label {
-	return &Label{
+	lbl := &Label{
 		node: newNode(),
 		Text: text,
 	}
+	lbl.node.Label = lbl
+	return lbl
 }
 
 type TextInput struct {
@@ -73,6 +91,11 @@ type TextInput struct {
 	Text      string `json:"text"`
 	OnChanged string `json:"on_changed"`
 }
+
+// implements NodeFuncs
+func (n *TextInput) Append(node NodeFuncs)    { n.node.Append(node) }
+func (n *TextInput) SetClient(client *Client) { n.node.SetClient(client) }
+func (n *TextInput) Node() *Node              { return n.node }
 
 type ComboBox struct {
 	node *Node
@@ -83,27 +106,51 @@ type ComboBox struct {
 	OnChanged string   `json:"on_changed"`
 }
 
-var ()
+// implements NodeFuncs
+func (n *ComboBox) Append(node NodeFuncs)    { n.node.Append(node) }
+func (n *ComboBox) SetClient(client *Client) { n.node.SetClient(client) }
+func (n *ComboBox) Node() *Node              { return n.node }
+
+var (
+	_ NodeFuncs = &Node{}
+	_ NodeFuncs = &Label{}
+	_ NodeFuncs = &TextInput{}
+	_ NodeFuncs = &ComboBox{}
+)
 
 type NodeFuncs interface {
+	SetClient(client *Client)
 	Append(node NodeFuncs)
+	Node() *Node
 }
 
 type Node struct {
-	state *nodeState
+	state nodeState
 
 	Label     *Label     `json:",omitempty"`
 	TextInput *TextInput `json:",omitempty"`
 	ComboBox  *ComboBox  `json:",omitempty"`
 }
 
-func (n *Node) Append(node NodeFuncs) {
+func (n *Node) Node() *Node { return n }
 
+func (n *Node) SetClient(client *Client) {
+	n.state.client = client
+}
+
+func (n *Node) Append(node NodeFuncs) {
+	n.state.children = append(n.state.children, node)
+
+	if n.state.client != nil {
+		n.state.client.currentTx.append(n, node)
+
+		node.SetClient(n.state.client)
+	}
 }
 
 func newNode() *Node {
 	return &Node{
-		state: &nodeState{
+		state: nodeState{
 			id: newId(),
 		},
 	}
@@ -112,12 +159,12 @@ func newNode() *Node {
 type CmdAppendChild struct {
 	ParentId uint32 `json:"parent_id"`
 	ObjectId uint32 `json:"object_id"`
-	Node     Node   `json:"node"`
+	Node     *Node  `json:"node"`
 }
 
 type CmdReplaceNode struct {
 	ObjectId uint32 `json:"object_id"`
-	Node     Node   `json:"node"`
+	Node     *Node  `json:"node"`
 }
 
 type EditCommand struct {
@@ -128,4 +175,12 @@ type EditCommand struct {
 type Transaction struct {
 	ClientId string        `json:"client_id"`
 	Edits    []EditCommand `json:"edits"`
+}
+
+func (t *Transaction) append(parent *Node, node NodeFuncs) {
+	t.Edits = append(t.Edits, EditCommand{AppendChild: &CmdAppendChild{
+		ParentId: parent.state.id,
+		ObjectId: node.Node().state.id,
+		Node:     node.Node(),
+	}})
 }

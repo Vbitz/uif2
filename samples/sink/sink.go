@@ -8,6 +8,10 @@ import (
 
 func main() {
 	client, err := uif2.Dial()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	client.Root.Append(uif2.NewLabel("Hello"))
 	err = client.Flush()
 	if err != nil {
