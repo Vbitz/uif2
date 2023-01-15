@@ -1,6 +1,9 @@
 package uif2
 
 import (
+	"fmt"
+	"log"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -13,10 +16,38 @@ func newId() uint32 {
 	return currentId
 }
 
+var currentUid uint32 = 1
+
+func newUid() string {
+	currentUid += 1
+	return fmt.Sprintf("%d", currentUid)
+}
+
 type Client struct {
 	conn      *websocket.Conn
 	currentTx *Transaction
 	Root      *Node
+	callbacks []func(*Event)
+}
+
+func (c *Client) addEventCallback(cb func(*Event)) {
+	c.callbacks = append(c.callbacks, cb)
+}
+
+func (c *Client) eventLoop() {
+	for {
+		var ev Event
+
+		err := c.conn.ReadJSON(&ev)
+		if err != nil {
+			log.Printf("error reading event: %v", err)
+			return
+		}
+
+		for _, cb := range c.callbacks {
+			cb(&ev)
+		}
+	}
 }
 
 func (c *Client) Flush() error {
@@ -44,6 +75,8 @@ func Dial() (*Client, error) {
 			Edits:    []EditCommand{},
 		},
 	}
+
+	go client.eventLoop()
 
 	client.Root = &Node{
 		state: nodeState{
@@ -74,6 +107,7 @@ func (n *Label) Node() *Node              { return n.node }
 
 func (n *Label) SetText(t string) {
 	n.Text = t
+	n.node.Replace()
 }
 
 func NewLabel(text string) *Label {
@@ -90,6 +124,20 @@ type TextInput struct {
 
 	Text      string `json:"text"`
 	OnChanged string `json:"on_changed"`
+}
+
+func NewTextInput() *TextInput {
+	txt := &TextInput{
+		node:      newNode(),
+		Text:      "",
+		OnChanged: newUid(),
+	}
+	txt.node.TextInput = txt
+	return txt
+}
+
+func (n *TextInput) AddOnChanged(cb func()) {
+	n.node.AddUpdateListener(n.OnChanged, cb)
 }
 
 // implements NodeFuncs
@@ -132,6 +180,14 @@ type Node struct {
 	ComboBox  *ComboBox  `json:",omitempty"`
 }
 
+func (n *Node) update(node Node) {
+	if node.ComboBox != nil {
+		n.ComboBox.Selected = node.ComboBox.Selected
+	} else if node.TextInput != nil {
+		n.TextInput.Text = node.TextInput.Text
+	}
+}
+
 func (n *Node) Node() *Node { return n }
 
 func (n *Node) SetClient(client *Client) {
@@ -145,6 +201,23 @@ func (n *Node) Append(node NodeFuncs) {
 		n.state.client.currentTx.append(n, node)
 
 		node.SetClient(n.state.client)
+	}
+}
+
+func (n *Node) Replace() {
+	if n.state.client != nil {
+		n.state.client.currentTx.replace(n)
+	}
+}
+
+func (n *Node) AddUpdateListener(evId string, cb func()) {
+	if n.state.client != nil {
+		n.state.client.addEventCallback(func(ev *Event) {
+			if ev.Update != nil {
+				n.update(ev.Update.Node)
+				cb()
+			}
+		})
 	}
 }
 
@@ -172,6 +245,21 @@ type EditCommand struct {
 	ReplaceNode *CmdReplaceNode `json:",omitempty"`
 }
 
+type EvUpdate struct {
+	Id       string `json:"id"`
+	ObjectId uint32 `json:"object_id"`
+	Node     Node   `json:"node"`
+}
+
+type EvClicked struct {
+	Id string `json:"id"`
+}
+
+type Event struct {
+	Update  *EvUpdate  `json:",omitempty"`
+	Clicked *EvClicked `json:",omitempty"`
+}
+
 type Transaction struct {
 	ClientId string        `json:"client_id"`
 	Edits    []EditCommand `json:"edits"`
@@ -182,5 +270,12 @@ func (t *Transaction) append(parent *Node, node NodeFuncs) {
 		ParentId: parent.state.id,
 		ObjectId: node.Node().state.id,
 		Node:     node.Node(),
+	}})
+}
+
+func (t *Transaction) replace(node *Node) {
+	t.Edits = append(t.Edits, EditCommand{ReplaceNode: &CmdReplaceNode{
+		ObjectId: node.state.id,
+		Node:     node,
 	}})
 }

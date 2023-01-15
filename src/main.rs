@@ -58,8 +58,14 @@ struct Transaction {
 
 #[derive(Serialize, Deserialize)]
 enum Event {
-    TextChanged { id: String, text: String },
-    Clicked { id: String },
+    Update {
+        id: String,
+        object_id: u32,
+        node: Node,
+    },
+    Clicked {
+        id: String,
+    },
 }
 
 struct ClientImpl {
@@ -108,6 +114,8 @@ impl SceneNode {
     fn draw(&self, client: &Client, ctx: &egui::Context, ui: &mut egui::Ui) -> () {
         let mut val = self.0.write().unwrap();
 
+        let object_id = val.id;
+
         match &mut val.node {
             Some(Node::Label { text, heading }) => {
                 if let Some(true) = heading {
@@ -120,9 +128,13 @@ impl SceneNode {
                 let resp = ui.text_edit_singleline(text);
 
                 if resp.changed() {
-                    client.send_event(Event::TextChanged {
+                    client.send_event(Event::Update {
                         id: on_changed.to_string(),
-                        text: text.to_string(),
+                        object_id: object_id,
+                        node: Node::TextInput {
+                            text: text.clone(),
+                            on_changed: on_changed.clone(),
+                        },
                     });
                 }
             }
@@ -167,9 +179,15 @@ impl SceneNode {
                     .response;
 
                 if resp.changed() {
-                    client.send_event(Event::TextChanged {
+                    client.send_event(Event::Update {
                         id: on_changed.to_string(),
-                        text: selected.to_string(),
+                        object_id: object_id,
+                        node: Node::ComboBox {
+                            label: label.clone(),
+                            selected: selected.clone(),
+                            options: vec![],
+                            on_changed: on_changed.clone(),
+                        },
                     });
                 }
             }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/vbitz/uif2/v2"
 )
@@ -12,10 +13,30 @@ func main() {
 		log.Fatal(err)
 	}
 
-	client.Root.Append(uif2.NewLabel("Hello"))
+	lbl := uif2.NewLabel("Hello")
+
+	client.Root.Append(lbl)
+
+	txt := uif2.NewTextInput()
+
+	client.Root.Append(txt)
+
+	txt.AddOnChanged(func() {
+		lbl.SetText(txt.Text)
+
+		err := client.Flush()
+		if err != nil {
+			log.Fatal(err)
+		}
+	})
+
 	err = client.Flush()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	for {
+		time.Sleep(1 * time.Second)
 	}
 
 	// conn.WriteJSON(uif2.Transaction{
