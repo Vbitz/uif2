@@ -213,7 +213,7 @@ func (n *Node) Replace() {
 func (n *Node) AddUpdateListener(evId string, cb func()) {
 	if n.state.client != nil {
 		n.state.client.addEventCallback(func(ev *Event) {
-			if ev.Update != nil {
+			if ev.Update != nil && ev.Update.Id == evId {
 				n.update(ev.Update.Node)
 				cb()
 			}
