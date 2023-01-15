@@ -1,5 +1,7 @@
 # UI Framework 2
 
+**STATUS**: This is a early pre-alpha that I am still activily working on. Expect breaking API changes.
+
 A thin client solution for building UIs.
 
 ## Motivation
